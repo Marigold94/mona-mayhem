@@ -1,17 +1,548 @@
 ---
-
+const usernamePattern = /^[A-Za-z0-9](?:[A-Za-z0-9]|\x2d(?=[A-Za-z0-9])){0,38}$/.source;
 ---
 
-<html lang="en">
+<html lang="ko">
 	<head>
 		<meta charset="utf-8" />
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 		<meta name="viewport" content="width=device-width" />
 		<meta name="generator" content={Astro.generator} />
-		<title>Mona Mayhem</title>
+		<title>Mona Mayhem - GitHub Contribution Battle Arena</title>
 	</head>
 	<body>
-		<h1>Mona Mayhem</h1>
-		<p>Welcome to Mona Mayhem! Time to build a GitHub Contribution Battle Arena.</p>
+		<main>
+			<header>
+				<h1>Mona Mayhem</h1>
+				<p>GitHub Contribution Battle Arena</p>
+				<p>두 플레이어의 GitHub 사용자 이름을 입력하세요.</p>
+			</header>
+
+			<form id="battle-form" aria-describedby="username-help">
+				<p id="username-help">
+					사용자 이름은 영문, 숫자, 하이픈(-)으로 최대 39자까지 입력할 수 있습니다.
+					하이픈은 처음과 끝에 쓰거나 연속해서 쓸 수 없습니다.
+				</p>
+				<div class="players">
+					{[1, 2].map((player) => (
+						<div class="field">
+							<label for={`player-${player}`}>플레이어 {player}</label>
+							<input
+								id={`player-${player}`}
+								name={`player-${player}`}
+								type="text"
+								placeholder={player === 1 ? 'octocat' : 'torvalds'}
+								required
+								maxlength="39"
+								pattern={usernamePattern}
+								autocapitalize="none"
+								autocomplete="off"
+								spellcheck="false"
+								aria-invalid="false"
+								aria-describedby={`username-help player-${player}-error`}
+							/>
+							<p id={`player-${player}-error`} class="field-error" hidden></p>
+						</div>
+					))}
+				</div>
+				<button type="submit">배틀</button>
+			</form>
+
+			<p id="battle-status" role="status">
+				두 사용자 이름을 입력하고 배틀을 시작하세요.
+			</p>
+			<p id="battle-error" role="alert" hidden></p>
+			<noscript>배틀을 실행하려면 JavaScript를 활성화해 주세요.</noscript>
+
+			<section id="battle-results" aria-labelledby="results-heading">
+				<h2 id="results-heading">배틀 결과</h2>
+				<div class="results">
+					{[1, 2].map((player) => (
+						<>
+						{player === 2 && <span class="vs" aria-label="대결">VS</span>}
+						<article aria-labelledby={`result-heading-${player}`}>
+							<h3 id={`result-heading-${player}`}>플레이어 {player}</h3>
+							<dl>
+								<div>
+									<dt>사용자 이름</dt>
+									<dd id={`result-username-${player}`}>—</dd>
+								</div>
+								<div>
+									<dt>기여 합계</dt>
+									<dd id={`result-total-${player}`}>미조회</dd>
+								</div>
+								<div>
+									<dt>조회 기간</dt>
+									<dd id={`result-range-${player}`}>미조회</dd>
+								</div>
+							</dl>
+							<div
+								id={`result-graph-${player}`}
+								class="contribution-graph"
+								role="region"
+								aria-label={`플레이어 ${player} 날짜별 기여 그래프`}
+								tabindex="0"
+							></div>
+						</article>
+						</>
+					))}
+				</div>
+			</section>
+		</main>
 	</body>
 </html>
+
+<script>
+	interface ContributionDay {
+		weekday: number;
+		count: number;
+		level: number;
+	}
+
+	interface ContributionWeek {
+		first_day: string;
+		contribution_days: ContributionDay[];
+	}
+
+	interface ContributionData {
+		schema: 'v2';
+		from: string;
+		to: string;
+		total_contributions: number;
+		weeks: ContributionWeek[];
+	}
+
+	const colors = ['#ebedf0', '#9be9a8', '#40c463', '#30a14e', '#216e39'];
+
+	function isRecord(value: unknown): value is Record<string, unknown> {
+		return typeof value === 'object' && value !== null;
+	}
+
+	function isDate(value: unknown): value is string {
+		if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+		const date = new Date(`${value}T00:00:00Z`);
+		return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+	}
+
+	function isCount(value: unknown): value is number {
+		return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+	}
+
+	function isDay(value: unknown): value is ContributionDay {
+		return isRecord(value) &&
+			isCount(value.weekday) && value.weekday <= 6 &&
+			isCount(value.count) && isCount(value.level) && value.level <= 4;
+	}
+
+	function isWeek(value: unknown): value is ContributionWeek {
+		return isRecord(value) && isDate(value.first_day) &&
+			new Date(`${value.first_day}T00:00:00Z`).getUTCDay() === 0 &&
+			Array.isArray(value.contribution_days) &&
+			value.contribution_days.length > 0 && value.contribution_days.length <= 7 &&
+			value.contribution_days.every(isDay) &&
+			new Set(value.contribution_days.map((day) => day.weekday)).size === value.contribution_days.length;
+	}
+
+	function isContributionData(value: unknown): value is ContributionData {
+		return isRecord(value) && value.schema === 'v2' &&
+			isDate(value.from) && isDate(value.to) && value.from <= value.to &&
+			isCount(value.total_contributions) &&
+			Array.isArray(value.weeks) && value.weeks.length > 0 && value.weeks.length <= 54 &&
+			value.weeks.every(isWeek);
+	}
+
+	function resultElement(id: string): HTMLElement {
+		const element = document.getElementById(id);
+		if (!(element instanceof HTMLElement)) {
+			throw new Error(`배틀 결과 요소를 찾을 수 없습니다: ${id}`);
+		}
+		return element;
+	}
+
+	function renderGraph(container: HTMLElement, username: string, data: ContributionData): void {
+		const namespace = 'http://www.w3.org/2000/svg';
+		const svg = document.createElementNS(namespace, 'svg');
+		svg.setAttribute('width', String(data.weeks.length * 14));
+		svg.setAttribute('height', '98');
+		svg.setAttribute('role', 'img');
+		svg.setAttribute('aria-label', `${username}: ${data.from} ~ ${data.to}, 총 ${data.total_contributions}회 기여. 색이 진할수록 기여가 많습니다.`);
+
+		data.weeks.forEach((week, column) => {
+			for (const day of week.contribution_days) {
+				const date = new Date(`${week.first_day}T00:00:00Z`);
+				date.setUTCDate(date.getUTCDate() + day.weekday);
+				const dateLabel = date.toISOString().slice(0, 10);
+				const square = document.createElementNS(namespace, 'rect');
+				square.setAttribute('x', String(column * 14));
+				square.setAttribute('y', String(day.weekday * 14));
+				square.setAttribute('width', '12');
+				square.setAttribute('height', '12');
+				square.setAttribute('rx', '2');
+				square.setAttribute('fill', colors[day.level]);
+				const title = document.createElementNS(namespace, 'title');
+				title.textContent = `${dateLabel}: ${day.count}회 기여`;
+				square.append(title);
+				svg.append(square);
+			}
+		});
+		container.replaceChildren(svg);
+	}
+
+	async function fetchContributions(username: string, signal: AbortSignal): Promise<ContributionData> {
+		const response = await fetch(`/api/contributions/${encodeURIComponent(username)}`, { signal });
+		if (!response.ok) {
+			const message = response.status === 404
+				? 'GitHub 사용자를 찾을 수 없습니다.'
+				: response.status === 400
+					? '올바른 GitHub 사용자 이름을 입력해 주세요.'
+					: response.status === 504
+						? '조회 시간이 초과되었습니다. 다시 시도해 주세요.'
+						: '기여 데이터를 조회할 수 없습니다. 잠시 후 다시 시도해 주세요.';
+			throw new Error(`${username}: ${message}`);
+		}
+
+		let data: unknown;
+		try {
+			data = await response.json();
+		} catch {
+			throw new Error(`${username}: 기여 데이터 응답을 읽을 수 없습니다. 다시 시도해 주세요.`);
+		}
+		if (!isContributionData(data)) {
+			throw new Error(`${username}: 기여 데이터 형식이 올바르지 않습니다.`);
+		}
+		return data;
+	}
+
+	const form = document.querySelector('#battle-form');
+	const player1 = document.querySelector('#player-1');
+	const player2 = document.querySelector('#player-2');
+	const status = document.querySelector('#battle-status');
+	const button = document.querySelector('button[type="submit"]');
+
+	if (
+		!(form instanceof HTMLFormElement) ||
+		!(player1 instanceof HTMLInputElement) ||
+		!(player2 instanceof HTMLInputElement) ||
+		!(status instanceof HTMLElement) ||
+		!(button instanceof HTMLButtonElement)
+	) {
+		throw new Error('배틀 페이지의 필수 요소를 찾을 수 없습니다.');
+	}
+
+	form.noValidate = true;
+	const players = [player1, player2];
+	const fieldErrors = [1, 2].map((player) => resultElement(`player-${player}-error`));
+	const battleError = resultElement('battle-error');
+	const results = [1, 2].map((player) => ({
+		username: resultElement(`result-username-${player}`),
+		total: resultElement(`result-total-${player}`),
+		range: resultElement(`result-range-${player}`),
+		graph: resultElement(`result-graph-${player}`),
+	}));
+	const resultsSection = resultElement('battle-results');
+	let loading = false;
+
+	function clearResults(): void {
+		for (const result of results) {
+			result.username.textContent = '—';
+			result.total.textContent = '미조회';
+			result.range.textContent = '미조회';
+			result.graph.replaceChildren();
+		}
+	}
+
+	function validationMessage(input: HTMLInputElement): string {
+		const value = input.value.trim();
+		if (!value) return 'GitHub 사용자 이름을 입력해 주세요.';
+		if (value.length > input.maxLength) return '사용자 이름은 최대 39자까지 입력할 수 있습니다.';
+		if (!new RegExp(`^(?:${input.pattern})$`).test(value)) {
+			return '영문과 숫자를 사용하고, 하이픈은 문자 사이에 하나씩만 넣어 주세요.';
+		}
+		return '';
+	}
+
+	function setFieldError(input: HTMLInputElement, index: number, message: string): void {
+		fieldErrors[index].textContent = message;
+		fieldErrors[index].hidden = !message;
+		input.setAttribute('aria-invalid', message ? 'true' : 'false');
+	}
+
+	function clearBattleError(): void {
+		battleError.textContent = '';
+		battleError.hidden = true;
+	}
+
+	players.forEach((input, index) => {
+		input.addEventListener('input', () => {
+			if (input.getAttribute('aria-invalid') === 'true') {
+				setFieldError(input, index, validationMessage(input));
+			}
+			clearBattleError();
+			status.textContent = '사용자 이름을 확인하고 배틀을 시작하세요.';
+		});
+	});
+
+	form.addEventListener('submit', async (event) => {
+		event.preventDefault();
+		if (loading) return;
+		clearResults();
+		clearBattleError();
+		status.textContent = '';
+
+		let firstInvalid: HTMLInputElement | undefined;
+		players.forEach((input, index) => {
+			input.value = input.value.trim();
+			const message = validationMessage(input);
+			setFieldError(input, index, message);
+			if (message && !firstInvalid) firstInvalid = input;
+		});
+
+		if (firstInvalid) {
+			firstInvalid.focus();
+			return;
+		}
+
+		const focusedControl = document.activeElement;
+		let shouldRestoreFocus = focusedControl === button || players.some((input) => input === focusedControl);
+		const cancelFocusRestore = () => { shouldRestoreFocus = false; };
+		const trackFocus = (event: FocusEvent) => {
+			if (event.target !== focusedControl) cancelFocusRestore();
+		};
+		const trackPointer = (event: PointerEvent) => {
+			if (event.target !== focusedControl) cancelFocusRestore();
+		};
+		loading = true;
+		button.disabled = true;
+		button.textContent = '조회 중…';
+		for (const input of players) input.disabled = true;
+		document.addEventListener('focusin', trackFocus);
+		document.addEventListener('pointerdown', trackPointer);
+		window.addEventListener('blur', cancelFocusRestore);
+		resultsSection.setAttribute('aria-busy', 'true');
+		status.textContent = '두 사용자의 기여 데이터를 조회하고 있습니다.';
+		const controller = new AbortController();
+		const timeout = window.setTimeout(() => controller.abort(), 15_000);
+		const usernames = players.map((input) => input.value);
+
+		try {
+			const data = await Promise.all(usernames.map((username) => fetchContributions(username, controller.signal)));
+			data.forEach((contributions, index) => {
+				const result = results[index];
+				result.username.textContent = usernames[index];
+				result.total.textContent = `${contributions.total_contributions.toLocaleString('ko-KR')}회`;
+				result.range.textContent = `${contributions.from} ~ ${contributions.to}`;
+				renderGraph(result.graph, usernames[index], contributions);
+			});
+			status.textContent = '두 사용자의 기여 데이터를 불러왔습니다. 그래프의 사각형에 마우스를 올리면 날짜와 기여 수를 확인할 수 있습니다.';
+		} catch (error) {
+			const timedOut = controller.signal.aborted;
+			controller.abort();
+			clearResults();
+			status.textContent = '';
+			battleError.textContent = timedOut
+				? '조회 시간이 초과되었습니다. 다시 시도해 주세요.'
+				: error instanceof TypeError
+					? '네트워크 연결을 확인하고 다시 시도해 주세요.'
+					: error instanceof Error
+						? error.message
+						: '기여 데이터를 불러오지 못했습니다. 다시 시도해 주세요.';
+			battleError.hidden = false;
+		} finally {
+			window.clearTimeout(timeout);
+			document.removeEventListener('focusin', trackFocus);
+			document.removeEventListener('pointerdown', trackPointer);
+			window.removeEventListener('blur', cancelFocusRestore);
+			loading = false;
+			button.disabled = false;
+			button.textContent = '배틀';
+			for (const input of players) input.disabled = false;
+			resultsSection.setAttribute('aria-busy', 'false');
+			if (
+				shouldRestoreFocus &&
+				focusedControl instanceof HTMLElement &&
+				document.hasFocus() &&
+				(document.activeElement === document.body || document.activeElement === focusedControl)
+			) {
+				focusedControl.focus();
+			}
+		}
+	});
+</script>
+
+<style>
+	:global(body) {
+		margin: 0;
+		background: #f6f8fa;
+		color: #1f2328;
+		font-family: system-ui, sans-serif;
+		line-height: 1.6;
+	}
+
+	main {
+		max-width: 72rem;
+		margin: 0 auto;
+		padding: 2rem 1rem;
+	}
+
+	h1,
+	h2,
+	h3 {
+		line-height: 1.3;
+	}
+
+	header,
+	form {
+		margin-bottom: 2rem;
+	}
+
+	.players {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 1rem;
+	}
+
+	.results {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+		gap: 1rem;
+		align-items: center;
+	}
+
+	.vs {
+		justify-self: center;
+		border-radius: 999px;
+		padding: 0.25rem 0.625rem;
+		background: #ddf4ff;
+		font-weight: 700;
+		color: #0969da;
+		text-align: center;
+	}
+
+	.contribution-graph {
+		margin-top: 1rem;
+		overflow-x: auto;
+	}
+
+	label {
+		display: block;
+		margin-bottom: 0.5rem;
+		font-weight: 600;
+	}
+
+	input,
+	button {
+		box-sizing: border-box;
+		min-height: 2.75rem;
+		border: 1px solid #8c959f;
+		border-radius: 0.375rem;
+		padding: 0.625rem 0.75rem;
+		font: inherit;
+	}
+
+	input {
+		width: 100%;
+		background: #fff;
+		color: inherit;
+	}
+
+	input[aria-invalid='true'] {
+		border: 2px solid #8a2be2;
+		background: #171126;
+		color: #effff2;
+		box-shadow: 0 0 0 1px #5fed83, 0 0 8px rgb(138 43 226 / 20%);
+	}
+
+	input[aria-invalid='true']::placeholder {
+		color: #c9d1d9;
+	}
+
+	.field-error,
+	#battle-error {
+		margin: 0.75rem 0 0;
+		border: 1px solid #8a2be2;
+		border-inline-start: 3px solid #5fed83;
+		border-radius: 0.375rem;
+		padding: 0.625rem 0.75rem;
+		background: #171126;
+		color: #effff2;
+		font-weight: 600;
+		overflow-wrap: anywhere;
+		box-shadow: 0 0 8px rgb(95 237 131 / 12%);
+	}
+
+	.field-error[hidden],
+	#battle-error[hidden] {
+		display: none;
+	}
+
+	button {
+		margin-top: 1rem;
+		padding-inline: 2rem;
+		border-color: #0969da;
+		background: #0969da;
+		color: #fff;
+		cursor: pointer;
+	}
+
+	button:hover {
+		background: #0550ae;
+	}
+
+	button:disabled {
+		opacity: 0.65;
+		cursor: wait;
+	}
+
+	input:focus-visible,
+	button:focus-visible,
+	.contribution-graph:focus-visible {
+		outline: 3px solid #0550ae;
+		outline-offset: 4px;
+		box-shadow: 0 0 0 2px #fff;
+	}
+
+	article {
+		min-width: 0;
+		border: 1px solid #d0d7de;
+		border-radius: 0.375rem;
+		padding: 1rem;
+		background: #fff;
+	}
+
+	article h3 {
+		margin-top: 0;
+	}
+
+	dl {
+		margin-bottom: 0;
+	}
+
+	dl div + div {
+		margin-top: 0.75rem;
+	}
+
+	dt {
+		font-weight: 600;
+	}
+
+	dd {
+		margin: 0;
+		overflow-wrap: anywhere;
+	}
+
+	@media (max-width: 1024px) {
+		.results {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	@media (max-width: 36rem) {
+		.players {
+			grid-template-columns: 1fr;
+		}
+
+		button {
+			width: 100%;
+		}
+	}
+</style>
